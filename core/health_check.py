@@ -1,27 +1,41 @@
 import os
-import json
 import ollama
 
-def get_configured_models():
-    """從 database/built_in_db.json 讀取設定的模型名稱"""
-    config_path = os.path.join("database", "built_in_db.json")
-    main_model = "qwen3"
-    embed_model = "nomic-embed-text"
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-                main_model = cfg.get("model_name", "qwen3")
-        except Exception:
-            pass
-    return main_model, embed_model
+from core.config_manager import config
+
+
+class ConfiguredModels(dict):
+    """
+    兼具 dict 與 tuple 解包特性的設定模型字典物件。
+    支援:
+        cfg = get_configured_models()
+        cfg["main_model"]
+        main, embed = get_configured_models()
+    """
+    def __iter__(self):
+        return iter((self["main_model"], self["embed_model"]))
+
+
+def get_configured_models() -> ConfiguredModels:
+    """
+    從 ConfigManager 讀取設定的模型名稱。
+    回傳兼具 dict 與 tuple 解包特性的 ConfiguredModels 物件。
+    """
+    return ConfiguredModels({
+        "main_model": config.model_name,
+        "embed_model": config.embed_model,
+    })
+
 
 def check_ollama_status() -> dict:
     """
     全面檢測 Ollama 服務狀態與必要模型下載情況。
     回傳字典包含狀態旗標、模型清單、友善提示與 HTML 視圖。
     """
-    main_model, embed_model = get_configured_models()
+    models_cfg = get_configured_models()
+    main_model = models_cfg["main_model"]
+    embed_model = models_cfg["embed_model"]
+
     result = {
         "connected": False,
         "main_model": main_model,
@@ -97,7 +111,7 @@ def check_ollama_status() -> dict:
     except Exception as e:
         result["connected"] = False
         result["status_code"] = "OFFLINE"
-        result["summary"] = "無法連線至本機 Ollama 服務 (127.0.0.1:11434)"
+        result["summary"] = "無法連線至本機 Ollama 服務"
         result["action_guide"] = (
             "1. 前往 https://ollama.com 下載並安裝 Ollama\n"
             "2. 啟動 Ollama 服務 (終端機執行 `ollama serve` 或開啟桌面常駐程式)\n"
@@ -107,7 +121,7 @@ def check_ollama_status() -> dict:
         )
         result["terminal_message"] = (
             "========================================================================\n"
-            "[系統健康檢查警告] 未能連線至本地 Ollama 服務 (http://127.0.0.1:11434)！\n"
+            "[系統健康檢查警告] 未能連線至本地 Ollama 服務！\n"
             "在新環境部署時，請依照下列步驟進行：\n"
             "1. 下載並安裝 Ollama：https://ollama.com\n"
             "2. 啟動服務：在命令列執行 `ollama serve` 或啟動桌面常駐程式\n"
@@ -119,6 +133,7 @@ def check_ollama_status() -> dict:
 
     result["ui_html"] = render_status_html(result)
     return result
+
 
 def render_status_html(res: dict) -> str:
     """產生符合白底簡約 + 3 色系 (綠/橘/藍) 的 Ollama 狀態卡片 HTML"""

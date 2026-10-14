@@ -56,9 +56,12 @@ class TestLearnPythonBot(unittest.TestCase):
         self.assertFalse(is_blocked)
 
     def test_file_reader_local_not_found(self):
-        """測試讀取不存在檔案時的友善錯誤處理"""
+        """測試讀取不存在或沙盒外檔案時的友善錯誤處理"""
         res = read_local_file("non_existent_file_xyz.pdf")
-        self.assertTrue("Error: 找不到本機檔案" in res)
+        # 沙盒白名單會在路徑不在 database/users/ 之內時攔截並回傳「錯誤：無權限」
+        # 若路徑在沙盒內但不存在，則回傳「錯誤：找不到」
+        # 兩種情況均以「錯誤：」開頭（無權限或找不到）
+        self.assertTrue(res.startswith("錯誤："))
 
     def test_skills_html_generation(self):
         """測試 AI 技能清單 HTML 結構生成"""

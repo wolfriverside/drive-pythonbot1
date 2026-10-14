@@ -39,6 +39,9 @@ ENV/
 # Project specific: User Data & Private Logs (非常重要：排除使用者隱私對話與檔案)
 database/users/
 database/suspicious.log
+*.log
+gradio-*.log
+pyrightconfig.json
 
 # Project specific: Temporary download cache (保留目錄結構檔案，排除臨時下載檔案)
 cache/downloads/*

@@ -1,7 +1,8 @@
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 import re
-from tools.web_scraper import extract_clean_text_and_tables, to_traditional_chinese
+from core.web_content_analyzer import extract_clean_text_and_tables
+from tools.web_search import to_traditional_chinese
 
 
 def form_search(url: str, keyword: str, max_pages: int = 3) -> dict:

@@ -39,20 +39,114 @@ def is_dictionary_result(title: str, href: str, query: str) -> bool:
             return True
     return False
 
-def is_spam_or_irrelevant(title: str, href: str, query: str) -> bool:
-    """Filters out unrelated stock forum posts, OS help, or shopping spam unless queried."""
-    # Finance/stock forum spam
+def is_language_mismatch(title: str, href: str, body: str, query: str) -> bool:
+    """Detects foreign language mismatch (e.g. Japanese results when querying Chinese)."""
+    has_japanese_query = bool(re.search(r'[\u3040-\u309f\u30a0-\u30ff]', query))
+    if not has_japanese_query:
+        p = urlparse(href)
+        host = p.netloc.lower()
+        if host.endswith(".jp") or "ja.wikipedia.org" in host or host.endswith(".kr") or "ko.wikipedia.org" in host:
+            return True
+        combined = (title or "") + " " + (body or "")
+        # Japanese Hiragana or Katakana count
+        kana_count = len(re.findall(r'[\u3040-\u309f\u30a0-\u30ff]', combined))
+        if kana_count >= 2:
+            return True
+    return False
+
+def is_spam_or_irrelevant(title: str, href: str, query: str, body: str = "") -> bool:
+    """Filters out commercial shopping, SEO travel clickbait, forum gossip, and unrelated spam."""
+    q_lower = query.lower()
+
+    # 1. Travel / tourism SEO clickbait filter
+    travel_kws = ["景點", "旅遊", "自由行", "住宿", "飯店", "必吃", "美食", "餐廳", "門票", "伴手禮", "機票", "玩", "吃", "行程"]
+    if not any(k in q_lower for k in travel_kws):
+        if re.search(r"(必去景點|自由行攻略|住宿推薦|必吃美食|行程規劃|景點推薦|優惠門票|包車旅遊|必去|打卡景點|伴手禮|一日遊|必買)", title):
+            return True
+        if re.search(r"【\d{4}.*(景點|旅遊|自由行|住宿|美食).*】", title):
+            return True
+
+    # 2. Shopping & e-commerce spam filter
+    shop_kws = ["買", "購物", "價格", "特價", "商城", "比價", "二手", "代購", "拍賣"]
+    if not any(k in q_lower for k in shop_kws):
+        shop_domains = ["shopee.tw", "momo.com.tw", "pchome.com.tw", "rakuten.com.tw", "coupang.com", "ruten.com.tw", "carousell.", "findprice."]
+        if any(d in href.lower() for d in shop_domains):
+            return True
+        if re.search(r"(熱銷推薦|限時下殺|免運優惠|折價券|比價網|促銷特價|線上購買|分期零利率)", title):
+            return True
+
+    # 3. Finance/stock forum spam
     finance_keywords = ["股票", "股價", "股市", "大盤", "基金", "期貨", "台積電", "009", "2330", "投資", "除息", "財經"]
-    if not any(k in query for k in finance_keywords):
-        if any(d in href for d in ["cmoney.tw/forum", "goodinfo.tw", "cnyes.com", "wantgoo.com", "moneydj.com"]):
+    if not any(k in q_lower for k in finance_keywords):
+        if any(d in href.lower() for d in ["cmoney.tw/forum", "goodinfo.tw", "cnyes.com", "wantgoo.com", "moneydj.com"]):
             return True
         if re.search(r"(\(\d{4}\)|\d{4}\s*今日股價|股市爆料同學會|走勢與討論)", title):
             return True
-    # Windows/OS help spam
-    if not any(k in query.lower() for k in ["windows", "檔案總管", "微軟", "作業系統", "wifi", "熱點"]):
-        if "support.microsoft.com" in href and any(w in title for w in ["檔案總管", "行動熱點"]):
+
+    # 4. Windows/OS help spam
+    if not any(k in q_lower for k in ["windows", "檔案總管", "微軟", "作業系統", "wifi", "熱點"]):
+        if "support.microsoft.com" in href.lower() and any(w in title for w in ["檔案總管", "行動熱點"]):
             return True
+
+    # 5. Low-quality scraper / adult / gambling spam
+    if re.search(r"(娛樂城|博弈|線上百家樂|六合彩|色情|成人影片|番號|高清線上看|免費看片)", title):
+        return True
+
     return False
+
+def calculate_relevance_score(query: str, title: str, href: str, body: str) -> float:
+    """Calculates semantic relevance score between user query and search result."""
+    q_norm = normalize_chinese_variants(to_traditional_chinese(query)).strip()
+    t_norm = normalize_chinese_variants(to_traditional_chinese(title)).strip()
+    b_norm = normalize_chinese_variants(to_traditional_chinese(body)).strip()
+    h_norm = href.lower()
+
+    score = 0.0
+
+    # 1. Exact query match in title
+    if q_norm.lower() in t_norm.lower():
+        score += 50.0
+    elif any(token in t_norm for token in q_norm.split() if len(token) >= 2):
+        score += 30.0
+
+    # 2. Token overlap analysis
+    subtokens = set()
+    cleaned_q = re.sub(r"[\s\-_/\\()（）\[\]【】\.,:;!！?？]+", " ", q_norm)
+    for part in cleaned_q.split():
+        if len(part) >= 2:
+            subtokens.add(part)
+        if len(part) > 2:
+            for i in range(len(part) - 1):
+                subtokens.add(part[i:i+2])
+
+    matched_tokens = 0
+    total_tokens = len(subtokens) if subtokens else 1
+    for tok in subtokens:
+        if tok in t_norm:
+            score += 15.0
+            matched_tokens += 1
+        elif tok in b_norm:
+            score += 5.0
+            matched_tokens += 0.5
+
+    coverage = matched_tokens / max(1, total_tokens)
+    score += coverage * 25.0
+
+    # 3. Domain authority bonus
+    if any(gov in h_norm for gov in [".gov.tw", "dgbas.gov.tw", "stat.gov.tw", "ris.gov.tw", "moi.gov.tw", "mac.gov.tw"]):
+        score += 20.0
+    elif ".edu.tw" in h_norm or "ac.uk" in h_norm:
+        score += 15.0
+    elif "wikipedia.org" in h_norm:
+        score += 12.0
+    elif any(media in h_norm for media in ["cna.com.tw", "bbc.com", "udn.com", "ltn.com.tw", "storm.mg"]):
+        score += 10.0
+
+    # 4. Penalty for very low token match on complex queries
+    if len(q_norm) >= 4 and coverage < 0.2:
+        score -= 40.0
+
+    return score
 
 def to_traditional_chinese(text: str) -> str:
     try:
@@ -60,6 +154,93 @@ def to_traditional_chinese(text: str) -> str:
         return OpenCC('s2twp').convert(text)
     except Exception:
         return text
+
+def normalize_chinese_variants(text: str) -> str:
+    """Normalizes common Chinese character variants across Taiwan/HK/PRC."""
+    t = to_traditional_chinese(text or "")
+    variants = [
+        ("迴", "回"),
+        ("臺", "台"),
+        ("裏", "裡"),
+        ("鑒", "鑑"),
+        ("沈", "沉"),
+        ("羣", "群"),
+        ("滙", "匯"),
+        ("綫", "線"),
+        ("鍊", "鏈"),
+    ]
+    for old, new in variants:
+        t = t.replace(old, new)
+    return t
+
+def canonicalize_url(url: str) -> str:
+    """
+    Normalizes a URL to a canonical representation for cross-language deduplication:
+    - Normalizes scheme (http -> https)
+    - Strips 'www.' and mobile prefixes (e.g. 'm.', 'zh.m.')
+    - Decodes percent-encoded characters (unquote) and converts to Traditional Chinese
+    - Normalizes language paths for Wikipedia, BBC, NYTimes, DW, RFI, etc.
+    - Strips tracking / analytics / language variant query parameters
+    - Removes trailing slashes and fragment identifiers
+    """
+    if not url:
+        return ""
+    try:
+        from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote
+        p = urlparse(url.strip())
+        scheme = "https" if p.scheme in ("http", "https") else p.scheme
+        netloc = p.netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        
+        # Mobile Wikipedia / site normalization
+        netloc = re.sub(r"^([a-z0-9\-]+)\.m\.", r"\1.", netloc)
+        if netloc.endswith("m.wikipedia.org"):
+            netloc = "zh.wikipedia.org"
+        if "wikipedia.org" in netloc and (netloc.startswith("zh-yue.") or netloc.startswith("zh-classical.")):
+            netloc = "zh.wikipedia.org"
+
+        raw_path = unquote(p.path).rstrip("/")
+        # Path language normalization
+        if "wikipedia.org" in netloc:
+            raw_path = re.sub(r"^/(zh-cn|zh-tw|zh-hk|zh-sg|zh-mo|zh-hans|zh-hant|zh|wiki)/", "/zh-tw/", raw_path)
+        elif "bbc.com" in netloc or "bbc.co.uk" in netloc:
+            raw_path = re.sub(r"/zhongwen/(simp|trad)/", "/zhongwen/trad/", raw_path)
+        elif "nytimes.com" in netloc:
+            raw_path = re.sub(r"/(zh-hans|zh-hant)/", "/zh-hant/", raw_path)
+        elif "rfi.fr" in netloc:
+            raw_path = re.sub(r"^/(cn|tw)/", "/tw/", raw_path)
+        
+        path = normalize_chinese_variants(raw_path)
+
+        filtered_params = []
+        for k, v in parse_qsl(p.query):
+            k_lower = k.lower()
+            if k_lower.startswith("utm_") or k_lower in ("fbclid", "ref", "source", "from", "spm", "variant", "lang", "setlang", "form", "cvid"):
+                continue
+            v_norm = normalize_chinese_variants(unquote(v))
+            filtered_params.append((k_lower, v_norm))
+
+        filtered_params.sort(key=lambda x: x[0])
+        query = urlencode(filtered_params)
+        return urlunparse((scheme, netloc, path, "", query, ""))
+    except Exception:
+        return url.strip().rstrip("/")
+
+def canonical_title_key(title: str) -> str:
+    """
+    Normalizes title to a unified Traditional Chinese canonical key for cross-language deduplication:
+    - Converts Simplified Chinese to Traditional Chinese
+    - Normalizes Chinese character variants
+    - Strips leading numbering (e.g. '1. ', '01 - ')
+    - Strips common media/portal/encyclopedia site suffixes and branding
+    - Strips all punctuation, whitespace, brackets, symbols
+    """
+    t = normalize_chinese_variants(title or "")
+    t = re.sub(r"^[\d#]+[\.\、\s\-]+", "", t).strip()
+    t = re.sub(r"[\s\-_|—–·]+(維基百科[，,\s]*自由的百科全書|維基百科[，,\s]*自由嘅百科全書|維基百科|自由的百科全書|自由嘅百科全書|bbc\s*news\s*中文|bbc\s*中文[網网]?|yahoo\s*新聞|newtalk\s*新聞|中時新聞網|聯合新聞網|自由時報|中央社\s*cna|ettoday\s*新聞雲|風傳媒|tvbs\s*新聞網|中華民國統計資訊網|百度百科|官方網站|首頁).*$", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"[\s\-_·|—–/\\()（）\[\]【】\.,:;!！?？'\"“”‘’`~]+", "", t.lower())
+    return t
 
 def generate_search_candidates(query: str) -> list:
     """
@@ -195,7 +376,8 @@ def search_bing_raw(query: str, max_results: int = 5) -> list:
                     body = snippet.get_text(strip=True) if snippet else ""
                     if (link and not link.startswith("javascript:") 
                             and not is_dictionary_result(title, link, query)
-                            and not is_spam_or_irrelevant(title, link, query)):
+                            and not is_language_mismatch(title, link, body, query)
+                            and not is_spam_or_irrelevant(title, link, query, body=body)):
                         if link not in seen_links:
                             seen_links.add(link)
                             results.append({"title": title, "href": link, "body": body})
@@ -225,7 +407,7 @@ def search_ddg_raw(query: str, max_results: int = 5) -> list:
     try:
         import primp
         client = primp.Client()
-        r = client.post("https://html.duckduckgo.com/html/", data={"q": query})
+        r = client.post("https://html.duckduckgo.com/html/", data={"q": query, "kl": "tw-tz"})
         if r.status_code != 200:
             return []
         
@@ -241,7 +423,8 @@ def search_ddg_raw(query: str, max_results: int = 5) -> list:
                 body = snippet.get_text(strip=True) if snippet else ""
                 if (link and not link.startswith("javascript:")
                         and not is_dictionary_result(title, link, query)
-                        and not is_spam_or_irrelevant(title, link, query)):
+                        and not is_language_mismatch(title, link, body, query)
+                        and not is_spam_or_irrelevant(title, link, query, body=body)):
                     if link not in seen_links:
                         seen_links.add(link)
                         results.append({"title": title, "href": link, "body": body})
@@ -252,59 +435,107 @@ def search_ddg_raw(query: str, max_results: int = 5) -> list:
         print(f"DDG search error for '{query}': {e}")
         return []
 
+def _filter_and_score_result(r: dict, query: str, seen_urls: set, seen_titles: set) -> dict | None:
+    """Filters out irrelevant/spam results and assigns semantic relevance score for ranking."""
+    r_title = to_traditional_chinese(r.get("title", ""))
+    r_body = to_traditional_chinese(r.get("body", ""))
+    r_href = r.get("href", "")
+    r["title"] = r_title
+    r["body"] = r_body
+
+    # 1. 字典/字義網站過濾
+    if is_dictionary_result(r_title, r_href, query):
+        return None
+
+    # 2. 異國語言不相符（例如搜尋中文卻傳回日文/韓文官網）
+    if is_language_mismatch(r_title, r_href, r_body, query):
+        return None
+
+    # 3. 商業購物、旅遊景點點擊農場、論壇灌水等無關垃圾過濾
+    if is_spam_or_irrelevant(r_title, r_href, query, body=r_body):
+        return None
+
+    # 4. 關鍵字語意關聯性門檻評分
+    rel_score = calculate_relevance_score(query, r_title, r_href, r_body)
+    if rel_score < 10.0:
+        return None
+
+    # 5. 跨語系、跨網址標準化去重
+    can_url = canonicalize_url(r_href)
+    can_title = canonical_title_key(r_title)
+
+    if can_url in seen_urls:
+        return None
+    if can_title and len(can_title) >= 4 and can_title in seen_titles:
+        return None
+
+    seen_urls.add(can_url)
+    if can_title and len(can_title) >= 4:
+        seen_titles.add(can_title)
+
+    r["_score"] = rel_score
+    return r
+
 def search_bing(query: str, max_results: int = 5) -> list:
     """
-    Smart multi-candidate Bing search.
-    Returns organic results up to max_results across candidates.
-    Trusts Bing's own relevance ranking rather than post-filtering.
+    Smart multi-candidate Bing search with strict cross-lingual and canonical URL deduplication.
     """
     candidates = generate_search_candidates(query)
     all_results = []
-    seen = set()
+    seen_urls = set()
+    seen_titles = set()
 
     for cand in candidates:
         results = search_bing_raw(cand, max_results=max_results)
         for r in results:
-            if r["href"] not in seen:
-                seen.add(r["href"])
-                all_results.append(r)
+            item = _filter_and_score_result(r, query, seen_urls, seen_titles)
+            if item:
+                all_results.append(item)
                 if len(all_results) >= max_results:
-                    return all_results
+                    break
         if len(all_results) >= max_results:
-            return all_results
+            break
 
-    return all_results
+    all_results.sort(key=lambda x: x.get("_score", 0), reverse=True)
+    return all_results[:max_results]
 
 def search_web(query: str, max_results: int = 5) -> list:
     """
-    High-performance, reliable web search using Hybrid Search Engine:
+    High-performance, reliable web search using Hybrid Cascading Search Engine:
     1. Primary: DuckDuckGo HTML via primp TLS-impersonation (bypasses bot challenges, extremely accurate)
-    2. Fallback: Localized Bing search with candidate multi-query expansion & strict anti-spam filtering
+    2. Fallback / Augment: Localized Bing search with candidate multi-query expansion
+    Strictly filters out foreign language mismatch, travel/shopping SEO spam, and ranks by semantic relevance.
     """
     candidates = generate_search_candidates(query)
     all_results = []
-    seen = set()
+    seen_urls = set()
+    seen_titles = set()
 
-    # Try Primary Engine (DDG via primp)
+    # 1. 優先由 DuckDuckGo 檢索
     for cand in candidates:
         results = search_ddg_raw(cand, max_results=max_results)
         for r in results:
-            if r["href"] not in seen:
-                seen.add(r["href"])
-                all_results.append(r)
+            item = _filter_and_score_result(r, query, seen_urls, seen_titles)
+            if item:
+                all_results.append(item)
                 if len(all_results) >= max_results:
-                    return all_results
+                    break
         if len(all_results) >= max_results:
-            return all_results
+            break
 
-    # Fallback to Bing
-    for cand in candidates:
-        results = search_bing_raw(cand, max_results=max_results)
-        for r in results:
-            if r["href"] not in seen:
-                seen.add(r["href"])
-                all_results.append(r)
-                if len(all_results) >= max_results:
-                    return all_results
+    # 2. 若有效相關結果不足（例如 DDG 回傳異國語言或垃圾被濾除），自動向 Bing 串接補充
+    if len(all_results) < max_results:
+        for cand in candidates:
+            results = search_bing_raw(cand, max_results=max_results)
+            for r in results:
+                item = _filter_and_score_result(r, query, seen_urls, seen_titles)
+                if item:
+                    all_results.append(item)
+                    if len(all_results) >= max_results:
+                        break
+            if len(all_results) >= max_results:
+                break
 
-    return all_results
+    # 依語意關聯性評分降序排列，確保最精準、最權威結果置頂
+    all_results.sort(key=lambda x: x.get("_score", 0), reverse=True)
+    return all_results[:max_results]

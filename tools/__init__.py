@@ -15,6 +15,7 @@ from tools.file_reader import read_local_file
 from tools.suggest_add_source import suggest_and_add_source
 
 
+
 # ── AI 技能清單權威定義 (AI Skills Registry) ──
 AI_SKILLS_REGISTRY: List[Dict[str, Any]] = [
     {
@@ -44,10 +45,15 @@ AI_SKILLS_REGISTRY: List[Dict[str, Any]] = [
     },
     {
         "name": "web_scraper",
-        "friendly_name": "網頁內文擷取 (web_scraper)",
+        "friendly_name": "網頁深度擷取 (web_scraper)",
         "file": "tools/web_scraper.py",
-        "short_desc": "讀取指定網址的內容，並提取純文字、表格與內部超連結。",
-        "description": "讀取指定網址的內容，並提取純文字與內部連結。",
+        "short_desc": "讀取指定網址的內容，提取純文字、表格與内部超連結，並自動識別頁面上的 PDF/DOCX 等可下載附件連結。",
+        "description": (
+            "深度讀取指定網址的完整內容，提取純文字、表格，並解析頁面上所有的超連結。\n"
+            "會自動分類出可下載附件（PDF、DOCX、XLSX 等）與其他頁面連結。\n"
+            "回傳結果中的 downloadable_files 欄位列出所有發現的附件，\n"
+            "可進一步使用 read_document 工具讀取附件內容。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -151,19 +157,34 @@ def get_all_tool_schemas() -> List[Dict[str, Any]]:
     return schemas
 
 
-def get_skills_display_info() -> List[Dict[str, str]]:
+def get_skills_display_info() -> List[Dict[str, Any]]:
     """
     提供給前端 UI (app.py) 渲染「AI 技能清單 (Skills)」摺疊面板的結構化資訊。
+    包含名稱、原名、檔案路徑、簡介、詳細規範與參數詳細說明。
     """
     display_list = []
     for skill in AI_SKILLS_REGISTRY:
+        params_props = skill.get("parameters", {}).get("properties", {})
+        required_list = skill.get("parameters", {}).get("required", [])
+        params_list = []
+        for p_name, p_info in params_props.items():
+            params_list.append({
+                "name": p_name,
+                "type": p_info.get("type", "string"),
+                "required": p_name in required_list,
+                "desc": p_info.get("description", "")
+            })
+
         display_list.append({
             "name": skill["friendly_name"],
             "raw_name": skill["name"],
             "file": skill["file"],
-            "desc": skill["short_desc"]
+            "desc": skill["short_desc"],
+            "full_desc": skill.get("description", ""),
+            "parameters": params_list
         })
     return display_list
+
 
 
 def get_skill_by_name(name: str) -> Dict[str, Any]:
@@ -183,5 +204,6 @@ __all__ = [
     "scrape_url",
     "form_search",
     "read_local_file",
-    "suggest_and_add_source"
+    "suggest_and_add_source",
 ]
+
